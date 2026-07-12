@@ -59,6 +59,10 @@ class VideoPipeline(
                 setInteger(MediaFormat.KEY_BIT_RATE, 2_500_000)
                 setInteger(MediaFormat.KEY_FRAME_RATE, 30)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)   // frequent keyframes for late joiners
+                // Surface-input encoders only emit on new buffers; a STATIC screen (e.g. mirror of
+                // an idle app) then produces zero frames and the bike times out. Repeat the last
+                // frame if nothing new arrives so output is continuous even when the screen is still.
+                setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 100_000L) // 100ms → ≥10fps floor
             }
             val c = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             // Prefer Baseline (embedded HU decoders often require it); fall back if the encoder rejects it.
