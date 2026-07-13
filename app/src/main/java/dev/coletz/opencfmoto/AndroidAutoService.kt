@@ -81,12 +81,14 @@ class AndroidAutoService : Service() {
     private fun startReceiver() {
         if (receiver != null) { LogBus.log("[AA] receiver already started"); return }
         try {
-            // Encoder at the bike's native 800x384 (AA projects 800x480 → scaled by the surface).
-            val vp = VideoPipeline(applicationContext, 800, 384, LogBus::log, externalSource = true)
+            // Compositor mode: the AA decoder renders into the compositor's input surface; the
+            // compositor letterboxes it into the bike's canvas (encoder created later, sized to the
+            // bike's REQ_CONFIG_CAPTURE dims — see EasyConnProber / VideoPipeline.configureBikeCanvas).
+            val vp = VideoPipeline(applicationContext, 0, 0, LogBus::log, compositor = true)
             vp.start()
-            val surface = vp.encoderInputSurface()
+            val surface = vp.decoderInputSurface()
             if (surface == null) {
-                LogBus.log("[AA] encoder input surface null — cannot start receiver")
+                LogBus.log("[AA] compositor input surface null — cannot start receiver")
                 vp.stop()
                 stopSelf()
                 return

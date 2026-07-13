@@ -6,6 +6,14 @@ Android Auto project to it via **non-VPN loopback self-mode**, and feed the deco
 **existing PXC pipeline** (`VideoPipeline` → `EasyConnProber` → bike). Reference implementation to port
 from: **headunit-revived (HUR)**.
 
+> **STATUS — M1–M4 DONE.** The embedded AA receiver streams to the bike end-to-end, phone lockable, on
+> **two dashboards** (CFDL16 landscape + CFDL26 portrait) via bike profiles. Two deviations from this
+> original plan: (1) the video path uses an **EGL letterbox compositor** (`AaCompositor`) that fits AA's
+> portrait 720×1280 into the bike's runtime canvas — not the naïve "decode straight to a fixed 800×384
+> encoder surface" assumed below; (2) AA resolution is **per-bike-profile** and the encoder is sized
+> dynamically to the bike's `CONFIG_CAPTURE`. See `02` ("Android Auto + multi-bike profiles") and `01`
+> §7 (CFDL26 protocol). **Remaining: M5 — touch input + audio (the current focus).**
+
 ## Reference project: headunit-revived (HUR)
 
 - GitHub: `https://github.com/andreknieriem/headunit-revived` — **AGPLv3** (accepted; we ship AGPLv3).
@@ -117,7 +125,7 @@ speaker / BT helmet. Reconnect/auto-start UX.
 - Bike sessions are run by the owner; you get the exported log. Log every stage (`[AA] …`) so one session
   is diagnosable.
 - If a wire format proves uncertain, resolve it via a live bike test session with verbose logging (see
-  `01` §7).
+  `01` §8).
 - Keep each milestone shippable and independently verifiable — don't chain unverified assumptions.
 
 ## First concrete steps for you

@@ -1,11 +1,14 @@
 // Adapted from headunit-revived (AGPLv3): aap/protocol/messages/ServiceDiscoveryResponse.kt
-// Video-only head-unit profile for OpenCfMoto: advertises 800x480 H.264 video (GPU-scaled to
-// the bike's 800x384 encoder), a driving-status sensor, a touchscreen input service, and a PCM
-// microphone (required for AA bring-up). Audio sink, navigation-status, media-playback and
-// bluetooth services from HUR are intentionally dropped (video-only v1 — see docs 03 M5).
+// Video-only head-unit profile for OpenCfMoto: advertises 720x1280 PORTRAIT H.264 video
+// (composited aspect-correct into the bike's requested canvas — the CFDL26 dash is a tall 800x951
+// panel), a driving-status sensor, a touchscreen input service, and a PCM microphone (required for
+// AA bring-up). Audio sink, navigation-status, media-playback and bluetooth services from HUR are
+// intentionally dropped (video-only v1 — see docs 03 M5).
 package dev.coletz.opencfmoto.aa
 
 import com.google.protobuf.Message
+import dev.coletz.opencfmoto.AaResolution
+import dev.coletz.opencfmoto.BikeProfileHolder
 import dev.coletz.opencfmoto.aa.proto.Common
 import dev.coletz.opencfmoto.aa.proto.Control
 import dev.coletz.opencfmoto.aa.proto.Media
@@ -15,13 +18,25 @@ class ServiceDiscoveryResponse
     : AapMessage(Channel.ID_CTR, Control.ControlMsgType.MESSAGE_SERVICE_DISCOVERY_RESPONSE_VALUE, makeProto()) {
 
     companion object {
-        // AA won't project at the bike's native 800x384; request the smallest fixed enum
-        // (800x480) and let the decoder->encoder Surface scale it down to 800x384.
-        const val AA_WIDTH = 800
-        const val AA_HEIGHT = 480
-        private const val DENSITY_DPI = 160
+        // Video geometry is PROFILE-DRIVEN: the active bike profile (chosen from the QR modelId
+        // before AA starts, refined by CLIENT_INFO) supplies the AA resolution/orientation + dpi.
+        // CFDL16 → landscape 800x480 @160; CFDL26 (1000 MT-X) → portrait 720x1280 @240. These read
+        // the live holder so AaReceiver's decoder fallback dims track the selected profile too.
+        val AA_WIDTH: Int get() = BikeProfileHolder.active.aaVideo.width
+        val AA_HEIGHT: Int get() = BikeProfileHolder.active.aaVideo.height
+
+        private fun protoResolution(r: AaResolution):
+            Control.Service.MediaSinkService.VideoConfiguration.VideoCodecResolutionType = when (r) {
+            AaResolution.LANDSCAPE_800x480 ->
+                Control.Service.MediaSinkService.VideoConfiguration.VideoCodecResolutionType._800x480
+            AaResolution.PORTRAIT_720x1280 ->
+                Control.Service.MediaSinkService.VideoConfiguration.VideoCodecResolutionType._720x1280
+            AaResolution.PORTRAIT_1080x1920 ->
+                Control.Service.MediaSinkService.VideoConfiguration.VideoCodecResolutionType._1080x1920
+        }
 
         private fun makeProto(): Message {
+            val spec = BikeProfileHolder.active.aaVideo
             val services = mutableListOf<Control.Service>()
 
             // --- Sensor service (driving status + night) ---
@@ -33,7 +48,7 @@ class ServiceDiscoveryResponse
                 }.build()
             }.build())
 
-            // --- Video service (800x480 H.264 baseline, 30 fps) ---
+            // --- Video service (720x1280 PORTRAIT H.264 baseline, 30 fps) ---
             services.add(Control.Service.newBuilder().also { service ->
                 service.id = Channel.ID_VID
                 service.mediaSinkService = Control.Service.MediaSinkService.newBuilder().also { sink ->
@@ -42,9 +57,9 @@ class ServiceDiscoveryResponse
                     sink.availableWhileInCall = true
                     sink.addVideoConfigs(
                         Control.Service.MediaSinkService.VideoConfiguration.newBuilder().apply {
-                            codecResolution = Control.Service.MediaSinkService.VideoConfiguration.VideoCodecResolutionType._800x480
+                            codecResolution = protoResolution(spec.resolution)
                             frameRate = Control.Service.MediaSinkService.VideoConfiguration.VideoFrameRateType._30
-                            setDensity(DENSITY_DPI)
+                            setDensity(spec.dpi)
                             setMarginWidth(0)
                             setMarginHeight(0)
                             setVideoCodecType(Media.MediaCodecType.MEDIA_CODEC_VIDEO_H264_BP)
@@ -58,15 +73,16 @@ class ServiceDiscoveryResponse
                 service.id = Channel.ID_INP
                 service.inputSourceService = Control.Service.InputSourceService.newBuilder().also { inp ->
                     inp.touchscreen = Control.Service.InputSourceService.TouchConfig.newBuilder().apply {
-                        setWidth(AA_WIDTH)
-                        setHeight(AA_HEIGHT)
+                        setWidth(spec.width)
+                        setHeight(spec.height)
                     }.build()
                 }.build()
             }.build())
 
             // --- Audio2 sink (system sounds). Android Auto rejects a head unit that advertises
             //     no audio sink and drops the connection right after service discovery, so we
-            //     always advertise this even though v1 discards the PCM (see AapMessageHandlerType). ---
+            //     always advertise this even though the PCM is discarded — nav audio plays via the
+            //     phone's own output → BT helmet, not through us. See AapMessageHandlerType. ---
             services.add(Control.Service.newBuilder().also { service ->
                 service.id = Channel.ID_AU2
                 service.mediaSinkService = Control.Service.MediaSinkService.newBuilder().also { sink ->

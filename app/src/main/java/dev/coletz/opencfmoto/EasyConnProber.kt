@@ -171,7 +171,7 @@ class EasyConnProber(
                     catch (e: Exception) { log("[$tag] handler error: $e") }
                 }
             } else {
-                log("[$tag] framing=ReqBase (media plane)")
+                log("[$tag] framing=ReqBase (media plane) profile=${handshake.profile.name}")
                 mediaLoop(tag, input, socket.getOutputStream())
             }
         } catch (e: IOException) {
@@ -231,8 +231,11 @@ class EasyConnProber(
                 val wantEncoder = if (body.size >= 12) cfg.getInt(8) else 2
                 val supportExtend = if (body.size >= 30) body[29] else 0
                 log("[$tag] REQ_CONFIG_CAPTURE w=$w h=$h fps=$fps wantEncoder=$wantEncoder ext=$supportExtend len=${body.size}")
-                negW = w and 0xFFF0
-                negH = h and 0xFFF0
+                negW = handshake.profile.roundCaptureDimension(w)
+                negH = handshake.profile.roundCaptureDimension(h)
+                // If Android Auto is the source (shared pipeline), size its encoder + letterbox
+                // compositor to this bike canvas now — before the bike starts pulling frames (112/114).
+                AaVideoBridge.pipeline?.configureBikeCanvas(negW, negH)
                 // RLY_RV_CONFIG_CAPTURE (17): encoder(i32) | width&~15(s16) | height&~15(s16) | ext(byte)
                 val rly = ByteBuffer.allocate(9).order(ByteOrder.LITTLE_ENDIAN)
                 rly.putInt(0, if (wantEncoder == 0) 2 else wantEncoder)

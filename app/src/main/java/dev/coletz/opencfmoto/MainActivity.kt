@@ -33,6 +33,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var prober: EasyConnProber
     private var bleWakeUp: BleWakeUp? = null
     private val ts = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+    /** True when the pending QR scan should kick off the Android Auto flow (vs the mirror path). */
+    private var pendingAaStart = false
 
     private val scanLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -53,7 +55,34 @@ class MainActivity : AppCompatActivity() {
             "QR parsed: ssid=${qr.ssid} mac=${qr.mac} action=${qr.action} " +
                 "(ap=${qr.supportsAp}, p2p=${qr.supportsP2p}) modelId=${qr.modelId} sn=${qr.sn}"
         )
-        joinAndStart(qr)
+        // Pick the bike profile from the QR modelId up front — it drives the Android Auto
+        // resolution/orientation, which must be set before AA starts. CLIENT_INFO refines it later.
+        BikeProfileHolder.active = BikeProfiles.selectByModelId(qr.modelId)
+        val spec = BikeProfileHolder.active.aaVideo
+        log("→ bike profile (QR modelId=${qr.modelId}): ${BikeProfileHolder.active.name} " +
+            "→ AA ${spec.width}x${spec.height} @${spec.dpi}dpi")
+
+        if (pendingAaStart) {
+            pendingAaStart = false
+            log("→ starting Android Auto receiver (loopback self-mode). Ensure Android Auto is installed & set up.")
+            // Once AA video is steady, join the bike Wi-Fi and run the PXC handshake.
+            AaVideoBridge.onSteadyVideo = {
+                runOnUiThread {
+                    AaVideoBridge.onSteadyVideo = null
+                    log("→ Android Auto video is live — joining bike Wi-Fi")
+                    joinAndStart(qr)
+                }
+            }
+            AndroidAutoService.start(this)
+            // Trigger Google AA to project from the FOREGROUND activity (background-activity-launch
+            // safe on Android 12+/15), after giving the service's :5288 server time to bind.
+            logView.postDelayed({
+                dev.coletz.opencfmoto.aa.AaSelfMode.trigger(this, log = ::log)
+            }, 900)
+        } else {
+            // Mirror path (screen projection already armed): connect straight away.
+            joinAndStart(qr)
+        }
     }
 
     private val projectionLauncher = registerForActivityResult(
@@ -132,28 +161,20 @@ class MainActivity : AppCompatActivity() {
 
         // Android Auto receiver runs in its own foreground service so it survives lock/background.
         findViewById<Button>(R.id.btn_aa_start).setOnClickListener {
-            log("→ starting Android Auto receiver (loopback self-mode). Ensure Android Auto is installed & set up.")
-            // Once AA video is flowing steadily, auto-open the bike QR scanner so the hand-off
-            // doesn't depend on scanning in the right order. One-shot; runs on the UI thread.
-            AaVideoBridge.onSteadyVideo = {
-                runOnUiThread {
-                    AaVideoBridge.onSteadyVideo = null
-                    log("→ Android Auto video is live — opening bike QR scanner")
-                    ProjectionHolder.projection = null   // bike uses the AA pipeline, not mirror
-                    ensureLocationPermission()
-                    try {
-                        scanLauncher.launch(Intent(this, QrScanActivity::class.java))
-                    } catch (e: Exception) {
-                        log("auto-scan launch failed ($e) — tap Scan manually")
-                    }
-                }
+            // Scan the bike QR FIRST: its modelId picks the bike profile, which sets the Android Auto
+            // resolution/orientation. AA can't change resolution mid-session, so the profile must be
+            // known before AA starts. After AA video is steady we join the bike Wi-Fi and run the PXC
+            // handshake (which confirms the profile authoritatively from CLIENT_INFO). See scanLauncher.
+            log("→ Android Auto: scan the bike QR first so we pick the right screen profile.")
+            pendingAaStart = true
+            ProjectionHolder.projection = null   // bike uses the AA pipeline, not mirror
+            ensureLocationPermission()
+            try {
+                scanLauncher.launch(Intent(this, QrScanActivity::class.java))
+            } catch (e: Exception) {
+                log("scan launch failed ($e)")
+                pendingAaStart = false
             }
-            AndroidAutoService.start(this)
-            // Trigger Google AA to project from the FOREGROUND activity (background-activity-launch
-            // safe on Android 12+/15), after giving the service's :5288 server time to bind.
-            logView.postDelayed({
-                dev.coletz.opencfmoto.aa.AaSelfMode.trigger(this, log = ::log)
-            }, 900)
         }
         // Stop everything: Android Auto receiver, bike PXC, projection, and leave the bike Wi-Fi.
         findViewById<Button>(R.id.btn_aa_stop).setOnClickListener {

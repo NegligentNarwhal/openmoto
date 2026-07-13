@@ -2,7 +2,8 @@
 
 Package `dev.coletz.opencfmoto`. Kotlin, `minSdk 29`, `targetSdk 36`. Gradle version catalog at
 `gradle/libs.versions.toml`. Deps: AppCompat/Material, CameraX + ML Kit barcode (QR), JmDNS (mDNS),
-constraintlayout. (No AA/HUR deps yet — you'll add them.)
+constraintlayout, **protobuf + Conscrypt** (for the embedded Android Auto receiver). The HUR-derived
+Android Auto stack lives under `aa/` (see below).
 
 ## What works TODAY on real hardware ✅
 
@@ -15,12 +16,19 @@ constraintlayout. (No AA/HUR deps yet — you'll add them.)
    - **UI mode** — a `Presentation` ("Hello World") on a private `VirtualDisplay` → encoder → bike.
    - **Mirror mode** — full phone screen via `MediaProjection` (**"Entire screen"** capture) → encoder → bike.
 6. Confirmed: running **Android Auto in non-VPN self mode** (via headunit-revived) alongside the app and
-   using **whole-screen mirror** shows Android Auto navigation on the dash. (This is the smoke test that
+   using **whole-screen mirror** shows Android Auto navigation on the dash. (The smoke test that
    green-lit the full plan.)
+7. **Embedded Android Auto receiver → dash, end-to-end** (the `03` plan, DONE): Google AA projects to our
+   in-app loopback receiver; the decoded video is re-encoded and streamed to the bike via the PXC pipeline.
+   Phone can be locked/backgrounded (foreground service + wake lock). Confirmed with **Waze/Maps readable
+   on the dash**.
+8. **Two dashboards supported** via bike profiles: **CFDL16** (675, landscape) and **CFDL26** (1000 MT-X,
+   portrait touch, `sdkVersion 1.1.4`). The app auto-detects which and adapts the handshake + video
+   geometry. See "Multi-bike profiles" below and `01` §7.
 
-Known limitations of the current mirror path (why we're doing the full plan): whole-screen mirror
-occupies the phone; single-app capture doesn't work (Android 14 partial-projection needs extra handling
-we didn't add); mirror dies when the screen locks; aspect is letterboxed.
+The old mirror-path limitations (occupies the phone, dies on lock, single-app capture unsupported) are
+**superseded** by the embedded receiver (#7) — mirror mode still exists as a fallback but isn't the path
+for Android Auto anymore.
 
 ## Source files (all under `app/src/main/java/dev/coletz/opencfmoto/`)
 
@@ -68,9 +76,64 @@ we didn't add); mirror dies when the screen locks; aspect is letterboxed.
   implemented (not needed for the AA plan).
 - Bike media timeout is ~9s — a source that doesn't produce a frame quickly will make the bike drop.
 
-## The integration point for Android Auto
+## Android Auto + multi-bike profiles (IMPLEMENTED)
 
-`VideoPipeline` currently gets pixels from either a Presentation or MediaProjection. For the AA plan you
-will add a **third source**: Android Auto's decoded video rendered into the *same encoder input
-surface* (`VideoPipeline.inputSurface`). Everything downstream (encoder → frame queue → PXC data
-socket → bike) stays exactly as-is. See `03-PLAN-ANDROID-AUTO.md`.
+The `03` plan is done, and the app now supports **two different dashboards**. Two subsystems were added.
+
+### Bike profiles — `BikeProfile.kt`
+A strategy that detects *which* dashboard is connecting and dispatches per-bike behavior, so the verified
+CFDL16 path never regresses while CFDL26 gets its own quirks.
+
+- **`BikeProfile`** interface: `score(CLIENT_INFO)` (authoritative selection), `matchesModelId(qr)`
+  (early selection), `buildClientInfoReply(...)`, `handleUnknownControl(...)` (per-bike control-frame
+  handling), `roundCaptureDimension(...)`, and **`aaVideo: AaVideoSpec`** (the Android Auto
+  resolution/orientation + dpi to request for this dash).
+- **`BikeProfiles`** registry + **`BikeProfileHolder`** (process-global active profile).
+- **`LegacyCfdl16Profile`** — reproduces the original behavior byte-for-byte (landscape AA 800×480@160;
+  unknown control frames = log only). Safe default / fallback.
+- **`Cfdl26Profile`** — the 1000 MT-X (see `01` §7): advertises `supportFunction=128`/`supportScreenTouch`;
+  **acks every otherwise-unknown control frame with `cmd+1`** (clears the post-CHECK_SN notify burst that
+  gates the media plane); AA video = **portrait 720×1280@240**. Matched by QR `modelId 37426`.
+- Detection timing: the profile is picked **early from the QR `modelId`** (so the AA resolution is right
+  before AA starts — it can't change mid-session), then **confirmed authoritatively from CLIENT_INFO** in
+  `PxcHandshake` (logs if they disagree). `EasyConnProber`/`PxcHandshake` read `handshake.profile`;
+  `ServiceDiscoveryResponse` reads `BikeProfileHolder.active.aaVideo`.
+
+### Android Auto video path — `AaCompositor.kt` + `VideoPipeline` compositor mode
+AA and the bike often disagree on size *and orientation* (CFDL26: AA renders portrait 720×1280, bike wants
+800×944). Rendering the decoder straight onto the encoder surface stretched the image. So:
+
+- **`AaCompositor`** (EGL/GLES2) sits between the AA decoder and the encoder: the decoder renders into a
+  `SurfaceTexture` (`decoderInputSurface()`), and each frame is drawn **aspect-preserved, centered, on a
+  black background** (letterbox) into the encoder canvas. Viewport math in `computeViewport()`.
+- **`VideoPipeline` compositor mode** (`compositor=true`): at AA start the compositor's input surface is
+  up immediately (so AA can reach steady video *before* the bike connects — which is what triggers the
+  hand-off). The **encoder is created lazily in `configureBikeCanvas(w,h)`**, called from
+  `EasyConnProber` on `REQ_CONFIG_CAPTURE` (cmd 16) with the bike's **runtime** canvas — no hardcoded
+  resolution. `AndroidAutoService` creates the pipeline in this mode and hands `decoderInputSurface()` to
+  `AaReceiver`.
+- Result for CFDL26: AA 720×1280 → letterbox `531×944 @(134,0)` inside the 800×944 stream → correct-aspect
+  portrait nav with black side bars. Confirmed readable on the dash.
+
+### Reordered start flow — `MainActivity`
+Because the AA resolution must be chosen before AA starts, the flow is: **Start → scan QR (→ modelId →
+profile → AA resolution) → start AA → on steady video, join bike Wi-Fi + run PXC**. (Previously AA started
+first, then scanned.) The mirror path (`ProjectionHolder`) is unchanged.
+
+### New/changed files (this work)
+- **`BikeProfile.kt`** (new) — profiles, registry, holder, `AaVideoSpec`/`AaResolution`.
+- **`AaCompositor.kt`** (new) — EGL letterbox compositor.
+- **`VideoPipeline.kt`** — added compositor mode + `configureBikeCanvas()` + `decoderInputSurface()`;
+  encoder creation extracted into `createEncoder(w,h)` (dynamic size).
+- **`PxcHandshake.kt`** — holds the selected `profile`; routes CLIENT_INFO reply + unknown-control
+  handling through it; sets `BikeProfileHolder`.
+- **`PxcFrame.kt`** — CFDL26 cmd constants (`CMD_LOG_REPORT 0x10780`, `CMD_OTA_FTP_INFO 0x103a0`, …).
+- **`EasyConnProber.kt`** — routes dimension rounding + `configureBikeCanvas` through the active profile.
+- **`ServiceDiscoveryResponse.kt`** — AA video config is profile-driven (was hardcoded 800×480).
+- **`AndroidAutoService.kt`** — creates the pipeline in compositor mode.
+- **`MainActivity.kt`** — reordered start flow (QR → profile → AA → connect).
+
+### Still open (next: `03` M5)
+- **Touch input** back to AA (CFDL26 is a touch panel — `supportScreenTouch`, `supportHID`).
+- **Audio** to the bike / phone / BT helmet (currently video-only; the AA audio sink is advertised but
+  its PCM is discarded).

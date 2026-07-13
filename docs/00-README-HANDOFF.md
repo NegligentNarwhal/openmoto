@@ -56,7 +56,7 @@ emulator. Full plan in `03-PLAN-ANDROID-AUTO.md`.
 - The app has an **on-screen log view** and a **Share** button that exports the log to a file — every
   meaningful step must `log(...)` so a captured log is self-explanatory. Follow this convention.
 - If a wire-format detail proves uncertain in practice, resolve it with a live bike test session and
-  verbose logging around the step in question (see `01` §7).
+  verbose logging around the step in question (see `01` §8).
 - Keep changes **incremental and independently testable** — the owner's workflow is "you implement, they
   run one bike/phone test, they paste the log, you adjust." Optimize for that loop.
 

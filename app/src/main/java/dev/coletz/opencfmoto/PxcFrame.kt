@@ -67,6 +67,14 @@ data class PxcFrame(val cmd: Int, val payload: ByteArray) {
         const val CMD_CHECK_SN            = 0x103e0    // bike→phone {client_set,sn}; reply 0x103e1 + result
         const val CMD_CHECK_SN_ACK        = 0x103e1
         const val CMD_CHECK_SN_RESULT     = 0x201c0    // phone→bike {isOk,...}; bike acks 0x201c1
+        // BIKE B (CFDL26 / MotoPlay) log/report frame — bike→phone JSON {"log":...} after CAR_DATA
+        // select. The older CFDL16 unit never sends this. Ack (0x10781) is experimental — the CFDL26
+        // unit stalls (never opens the media ports) when we leave it unanswered. See Cfdl26Profile.
+        const val CMD_LOG_REPORT          = 0x10780
+        const val CMD_LOG_REPORT_ACK      = 0x10781
+        // More CFDL26 post-CHECK_SN notify frames (bike→phone JSON), each expecting a cmd+1 empty ack:
+        const val CMD_OTA_FTP_INFO        = 0x103a0   // {port,userName,pwd} for the FTP OTA server
+        const val CMD_MEDIA_FEATURE_CFG   = 0x10020   // {music,talkie,tts,vr,autoChangeToBT} feature flags
 
         // PXC application-level commands (sent AFTER channel selection completes).
         const val CMD_CLIENT_INFO         = 65552      // 0x10010   C2P (both directions)
@@ -80,6 +88,10 @@ data class PxcFrame(val cmd: Int, val payload: ByteArray) {
         const val CMD_START_OVERLAY       = 262224     // 0x40020   A2R
 
         fun nameOf(cmd: Int): String = when (cmd) {
+            CMD_LOG_REPORT             -> "LOG_REPORT (CFDL26)"
+            CMD_LOG_REPORT_ACK         -> "LOG_REPORT_ACK (CFDL26)"
+            CMD_OTA_FTP_INFO           -> "OTA_FTP_INFO (CFDL26)"
+            CMD_MEDIA_FEATURE_CFG      -> "MEDIA_FEATURE_CFG (CFDL26)"
             CMD_CLIENT_INFO            -> "CLIENT_INFO (PXC)"
             CMD_REMOTE_AUTH_RESULT     -> "REMOTE_AUTH_RESULT"
             CMD_AUTH_HUID              -> "AUTH_HUID"

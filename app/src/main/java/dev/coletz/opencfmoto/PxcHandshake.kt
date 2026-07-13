@@ -1,6 +1,5 @@
 package dev.coletz.opencfmoto
 
-import android.os.Build
 import org.json.JSONObject
 import java.net.Socket
 import java.util.UUID
@@ -25,6 +24,11 @@ class PxcHandshake(
     @Volatile var carHuid: String? = null
         private set
     @Volatile var lastClientInfo: JSONObject? = null
+        private set
+    /** Dashboard-variant strategy, selected from the bike's CLIENT_INFO. Read by the media plane too
+     *  (via EasyConnProber.handshake.profile). Written once on the control thread, before any media
+     *  socket exists. */
+    @Volatile var profile: BikeProfile = BikeProfiles.legacy
         private set
 
     /** Dispatch one inbound frame on a given socket (ctrl or media). */
@@ -53,8 +57,10 @@ class PxcHandshake(
                 // acks from the bike — nothing to do
             }
             else -> {
-                log("[$tag] cmd=0x${frame.cmd.toUInt().toString(16)} (${PxcFrame.nameOf(frame.cmd)}) " +
-                    "len=${frame.payload.size} ${frame.payload.asText()}")
+                if (!profile.handleUnknownControl(tag, frame, out, log)) {
+                    log("[$tag] cmd=0x${frame.cmd.toUInt().toString(16)} (${PxcFrame.nameOf(frame.cmd)}) " +
+                        "len=${frame.payload.size} ${frame.payload.asText()}")
+                }
             }
         }
     }
@@ -69,27 +75,18 @@ class PxcHandshake(
         carHuid = json.optString("HUID").ifEmpty { json.optString("huid") }.ifEmpty { null }
         log("[$tag] carHuid=$carHuid HUName=${json.optString("HUName")} channel=${json.optString("channel")}")
 
-        val reply = buildClientInfoReply(carHuid)
+        profile = BikeProfiles.select(json, log)
+        val early = BikeProfileHolder.active
+        if (early !== profile) {
+            log("[$tag] profile refined from QR guess '${early.name}' → CLIENT_INFO '${profile.name}' " +
+                "(AA already started at the QR-guess resolution)")
+        }
+        BikeProfileHolder.active = profile  // authoritative; QR modelId was only the early hint
+        log("[$tag] *** BikeProfile selected: ${profile.name} ***")
+
+        val reply = profile.buildClientInfoReply(json, carHuid, phoneUuid)
         log("[$tag] → CLIENT_INFO reply ${reply.toString().take(180)}…")
         PxcFrame(PxcFrame.CMD_CLIENT_INFO_RLY, reply.toString().toByteArray(Charsets.UTF_8)).write(out)
-    }
-
-    private fun buildClientInfoReply(huid: String?): JSONObject = JSONObject().apply {
-        put("pxcVersion", "1.0.2")
-        put("phoneUUID", phoneUuid)
-        put("phoneBrand", Build.BRAND)
-        put("phoneModel", Build.MODEL)
-        put("phoneOsVersion", Build.VERSION.SDK_INT.toString())
-        put("phoneOs", "Android")
-        put("package", EasyConnProber.SPOOFED_PACKAGE)
-        put("versionCode", 126)
-        put("token", 0)
-        put("pubkey", RsaKeys.publicKeyBase64)
-        put("encryptedHUID", huid?.let { RsaKeys.signHuid(it) } ?: "")
-        put("bluetoothName", "OpenCfMoto")
-        put("supportH264IFrame", true)
-        put("supportFunction", 0)
-        put("appVersionFingerPrint", "opencfmoto-poc")
     }
 
     private fun onCheckSn(tag: String, frame: PxcFrame, out: java.io.OutputStream) {

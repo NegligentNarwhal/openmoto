@@ -44,6 +44,13 @@ class VideoPipeline(
      * MediaProjection source is created. See [encoderInputSurface] and AaVideoBridge.
      */
     private val externalSource: Boolean = false,
+    /**
+     * When true, an [AaCompositor] sits between the AA decoder and the encoder: the decoder renders
+     * into [decoderInputSurface] and the compositor letterboxes it (aspect-preserved) into the
+     * encoder canvas. The encoder is created lazily in [configureBikeCanvas] once the bike reports
+     * its canvas size (so the encoder matches the bike, not a hardcoded resolution).
+     */
+    private val compositor: Boolean = false,
 ) {
     private val main = Handler(Looper.getMainLooper())
     private var codec: MediaCodec? = null
@@ -51,6 +58,9 @@ class VideoPipeline(
     private var virtualDisplay: VirtualDisplay? = null
     private var presentation: Presentation? = null
     private var drainThread: Thread? = null
+    private var aaCompositor: AaCompositor? = null
+    private var encoderW = 0
+    private var encoderH = 0
     @Volatile private var running = false
 
     private val frameQueue = LinkedBlockingDeque<ByteArray>(8)
@@ -59,8 +69,39 @@ class VideoPipeline(
     fun start() {
         if (running) return
         running = true
+
+        if (compositor) {
+            // Android Auto (letterbox) mode: bring up the compositor now so the AA decoder has an
+            // input surface and can reach steady video; the encoder is created later, once the bike
+            // tells us its canvas size (see [configureBikeCanvas]).
+            aaCompositor = AaCompositor(log).also { it.start() }
+            log("[VIDEO] COMPOSITOR mode — decoder input ready; awaiting bike canvas")
+            return
+        }
+
+        if (!createEncoder(width, height)) { stop(); return }
+
+        if (externalSource) {
+            // Android Auto mode: the AA VideoDecoder renders into inputSurface (see
+            // encoderInputSurface()). No Presentation/MediaProjection source here.
+            log("[VIDEO] EXTERNAL source mode (Android Auto) — encoder input surface ready")
+            return
+        }
+
+        val projection = ProjectionHolder.projection
+        if (projection != null) {
+            log("[VIDEO] FULL-SCREEN mirror mode (MediaProjection)")
+            setupProjectionDisplay(projection)
+        } else {
+            log("[VIDEO] own-content mode (Presentation)")
+            main.post { setupDisplayAndPresentation() }
+        }
+    }
+
+    /** Create + start the H.264 encoder at [w]x[h] and its drain thread. Returns false on failure. */
+    private fun createEncoder(w: Int, h: Int): Boolean {
         try {
-            fun baseFormat() = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+            fun baseFormat() = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
                 setInteger(MediaFormat.KEY_BIT_RATE, 2_500_000)
                 setInteger(MediaFormat.KEY_FRAME_RATE, 30)
@@ -87,28 +128,35 @@ class VideoPipeline(
             inputSurface = c.createInputSurface()
             c.start()
             codec = c
-            log("[VIDEO] encoder started ${width}x${height} h264 30fps")
-
-            drainThread = thread(name = "video-drain", isDaemon = true) { drainLoop() }
-
-            if (externalSource) {
-                // Android Auto mode: the AA VideoDecoder renders into inputSurface (see
-                // encoderInputSurface()). No Presentation/MediaProjection source here.
-                log("[VIDEO] EXTERNAL source mode (Android Auto) — encoder input surface ready")
-                return
-            }
-
-            val projection = ProjectionHolder.projection
-            if (projection != null) {
-                log("[VIDEO] FULL-SCREEN mirror mode (MediaProjection)")
-                setupProjectionDisplay(projection)
-            } else {
-                log("[VIDEO] own-content mode (Presentation)")
-                main.post { setupDisplayAndPresentation() }
-            }
+            encoderW = w; encoderH = h
+            log("[VIDEO] encoder started ${w}x${h} h264 30fps")
+            if (drainThread == null) drainThread = thread(name = "video-drain", isDaemon = true) { drainLoop() }
+            return true
         } catch (e: Exception) {
-            log("[VIDEO] start failed: $e")
-            stop()
+            log("[VIDEO] createEncoder failed: $e")
+            return false
+        }
+    }
+
+    /**
+     * Compositor mode only: create the encoder at the bike's canvas size and point the compositor
+     * at it. Called when the bike's REQ_CONFIG_CAPTURE dimensions are known. Idempotent; a later
+     * different size is not re-applied live (logged instead).
+     */
+    fun configureBikeCanvas(w: Int, h: Int) {
+        if (!compositor) return
+        if (codec != null) {
+            if (encoderW != w || encoderH != h) {
+                log("[VIDEO] bike canvas changed ${encoderW}x$encoderH → ${w}x$h — live resize unsupported, keeping ${encoderW}x$encoderH")
+            }
+            return
+        }
+        if (!createEncoder(w, h)) return
+        val src = BikeProfileHolder.active.aaVideo
+        val surf = inputSurface
+        if (surf != null) {
+            aaCompositor?.setOutput(surf, w, h, src.width, src.height)
+            log("[VIDEO] bike canvas ${w}x$h configured; AA source ${src.width}x${src.height} → letterboxed")
         }
     }
 
@@ -217,6 +265,9 @@ class VideoPipeline(
      */
     fun encoderInputSurface(): android.view.Surface? = inputSurface
 
+    /** Compositor mode: the surface the AA decoder renders into (letterboxed before the encoder). */
+    fun decoderInputSurface(): android.view.Surface? = aaCompositor?.inputSurface
+
     /** Called by the data socket on each REQ_RV_DATA_NEXT(114). Returns one access unit. */
     fun pollFrame(timeoutMs: Long): ByteArray? =
         try { frameQueue.pollFirst(timeoutMs, TimeUnit.MILLISECONDS) } catch (e: InterruptedException) { null }
@@ -224,6 +275,8 @@ class VideoPipeline(
     fun stop() {
         running = false
         drainThread?.interrupt(); drainThread = null
+        try { aaCompositor?.release() } catch (_: Exception) {}
+        aaCompositor = null
         main.post {
             try { presentation?.dismiss() } catch (_: Exception) {}
             presentation = null

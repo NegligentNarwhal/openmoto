@@ -6,11 +6,18 @@ byte layout, and cmd ID below as verified ground truth, not a hypothesis to be r
 
 ## 0. Hardware
 
-- Bike head unit: **"CFDL16-6GUV"**, HUID `6GUVA2C00100055`, a ~5" **800×386 landscape**, **non-touch**
-  dashboard (physical ~4.25" × 2.55"). Runs a Carbit EasyConn head unit, `flavor=65540`,
-  `sdkVersion 0.9.29.1`, `screenType=1`, `productType=3`, `mirrorMode=1`, `supportScreenMirroring=true`.
-- **`socketTimeoutPeriodWifi = 9`** — the bike drops the media connection if it doesn't get a frame
-  within ~9 seconds. First frame must arrive fast.
+**Two head units are now confirmed working** (both stream Android Auto end-to-end):
+
+- **CFDL16 (BIKE A, CFMoto 675 SR-R)**: head unit **"CFDL16-6GUV"**, HUID `6GUVA2C00100055`, a ~5"
+  **800×386 landscape**, **non-touch** dashboard (physical ~4.25" × 2.55"). Carbit EasyConn,
+  `flavor=65540`, `sdkVersion 0.9.29.1`, `screenType=1`, `productType=3`, `mirrorMode=1`,
+  `supportScreenMirroring=true`. This is the unit §§1–6 below were reverse-engineered against.
+- **CFDL26 (BIKE B, CFMoto 1000 MT-X)**: a **newer generation** — 8" **tall portrait** touch panel
+  (requests **800×951**), `sdkVersion 1.1.4`, `package com.cfmoto.cfdashmotoplay`,
+  `enableSockServerAuth=true`. Same core PXC protocol but with extra handshake steps and a different
+  transport. **Fully documented in §7.**
+- **`socketTimeoutPeriodWifi = 9`** (both) — the bike drops the media connection if it doesn't get a
+  frame within ~9 seconds. First frame must arrive fast.
 
 ## 1. The QR code
 
@@ -181,7 +188,67 @@ The bike also has a BLE service used by the official app for vehicle control (lo
   plaintext) → `0x5D` ack.
 - Per-pairing secrets (this owner's bike) are hardcoded in `BleSecrets.kt`.
 
-## 7. When you hit an unknown
+## 7. Second head unit — CFDL26 / MotoPlay (CFMoto 1000 MT-X)
+
+A **newer** dashboard, reverse-engineered and confirmed streaming Android Auto end-to-end. Same core
+PXC protocol as CFDL16 (§§1–5) but it diverges in verified ways. All values below are from live logs
+against the real bike (`com.cfmoto.cfdashmotoplay`). §§1–6 describe CFDL16; the deltas are here.
+
+### 7.0 Identity (from its CLIENT_INFO)
+- HUID `6WX0AT231300200`, HUName `CFMOTO-805120`, `package_name = com.cfmoto.cfdashmotoplay`,
+  `version_name = CFDL26.2.3.5.0.6`, **`sdkVersion 1.1.4`** (CFDL16 was `0.9.29.1`).
+- Same family: `flavor 65540`, `productType 3`, `screenType 1`, `mirrorMode 1`, `pxcVersion 1.0.2`.
+- **Deltas:** `enableSockServerAuth=true`, `dpi=240` (`enableDPI=true`), `supportScreenTouch=true`,
+  `supportHID=true`, `supportMirrorOverlayTouch=true`, `supportFunction=128` (was 0), `supportConnect=776`.
+- **8" TALL PORTRAIT panel** — requests **800×951** capture (§7.3), vs CFDL16's 800×386 landscape.
+- QR `modelid=37426` (CFDL16 was `37416`) — used to pick the bike profile *before* connecting (see `02`).
+
+### 7.1 Transport — Wi-Fi Direct P2P (not plain AP)
+QR SSID is `DIRECT-CF-CFMOTO-805120` (`pwd 12345678`) — a **Wi-Fi Direct** group, not CFDL16's plain AP.
+Phone lands on `192.168.49.132/24`, **gateway/bike = 192.168.49.1**, iface `wlan1` (the classic Android
+P2P subnet). Probe (:10930), connect-back, and framing are otherwise identical. Our `WifiNetworkSpecifier`
+join + `bindProcessToNetwork` handled this **unchanged** — no code change was needed for P2P.
+
+### 7.2 Handshake divergence — the post-CHECK_SN notify burst (THE gate)
+The control plane runs identically through channel selects + CLIENT_INFO + QUERY_SPEED + CAR_DATA select.
+**Then** the CFDL26 sends a burst of notify frames the CFDL16 never did, and **will not open the media
+ports until each is ACKed** (it goes silent and closes after the ~9s timeout otherwise). The whole PXC
+protocol acks with **reply = cmd+1 (empty)** — so the fix is simply: **ack every otherwise-unknown
+control frame with `cmd+1`.** Frames observed on the CAR_DATA (:10922) connection, in order:
+
+| cmd | name (ours) | payload | notes |
+|----:|------|---------|-------|
+| `0x10780` | LOG_REPORT | `{"log":"…mdns success…"}` | **the first gate** — CFDL16 never sends it; bike stalls if unacked |
+| `0x103e0` | CHECK_SN | `{client_set,sn}` | handled as on CFDL16 (→ `0x103e1` then `0x201c0`) |
+| `0x103a0` | OTA_FTP_INFO | `{port:11021,userName:"carbit_ec_ftp_ota",pwd:"$Siwei2018@"}` | the bike's own Carbit FTP server (§7.4) |
+| `0x10020` | MEDIA_FEATURE_CFG | `{music,talkie,tts,vr,autoChangeToBT}` | audio/feature flags |
+| `0x10040` | — | `{maxNaviIcon:161,supportFunction:0}` | |
+| `0x10600` | — | binary + timestamp | **repeats ~every 2s** — a clock/keepalive; keep acking |
+| `0x10750` | — | empty | repeats periodically |
+| `0x10430`,`0x10450` | — | empty | |
+| `0x10460` | — | `{bluetooth:4129}` | |
+
+After the burst is acked, the bike opens **:10921 (media ctrl)** and **:10920 (media data)** and pulls
+frames exactly like CFDL16.
+
+**`enableSockServerAuth=true` was a red herring** — it does NOT require a separate auth challenge beyond
+the `pubkey` + `encryptedHUID` already in our CLIENT_INFO reply. Acking the notify burst was sufficient;
+no `0x2001x`/`0x3001x` auth exchange was ever needed.
+
+### 7.3 Config-capture — portrait 800×951
+`REQ_RV_CONFIG_CAPTURE (16)` on :10921 requests **deviceWidth=800, deviceHeight=951** (body len 204),
+rounded to **800×944** (`& ~15`) in the RLY. The bike displays the 800×944 H.264 stream on its tall
+portrait panel. (CFDL16 requested 800×386 → 800×384.) Because the two panels differ in size *and*
+orientation, the video source is sized/oriented **per bike profile** — see `02` (BikeProfile + AaCompositor:
+Android Auto is asked for portrait 720×1280, letterboxed into the 800×944 canvas).
+
+### 7.4 The FTP OTA server (0x103a0)
+`carbit_ec_ftp_ota` @ `bike:11021` is the Carbit EasyConn OTA endpoint — where the official app
+**uploads firmware** to the dash. It is **not** a repository of updates to download, and writing to it
+can flash/brick the dash. Owner-authorized **read-only LIST** recon is fine; **never upload.** Not used
+for projection.
+
+## 8. When you hit an unknown
 
 Everything above is confirmed ground truth except the parts explicitly flagged as inferred (see §4).
 If an inferred detail proves wrong in practice, or a new format question comes up, the resolution loop

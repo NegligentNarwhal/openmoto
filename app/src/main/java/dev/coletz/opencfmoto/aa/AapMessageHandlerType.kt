@@ -20,8 +20,9 @@ internal class AapMessageHandlerType(
             }
         }
 
-        // 2. Audio (video-only v1): we advertise an audio sink to keep AA happy but don't play it.
-        //    ACK data buffers so AA's unacked window never stalls, then discard the PCM.
+        // 2. Audio: we advertise an audio sink to keep AA happy, but nav audio plays via the phone's
+        //    own output → paired BT helmet (the motorcycle audio path), NOT through us — AA keeps
+        //    audio local in self-mode. ACK data buffers so AA's unacked window never stalls, discard PCM.
         if (message.isAudio && (msgType == 0 || msgType == 1)) {
             transport.sendMediaAck(message.channel)
             return
