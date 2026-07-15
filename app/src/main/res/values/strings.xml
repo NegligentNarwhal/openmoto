@@ -5,6 +5,7 @@
     <string name="header_title">* OPENMOTO</string>
     <string name="label_status">STATUS</string>
     <string name="btn_pair">PAIR BIKE</string>
+    <string name="btn_manual">NO QR? ENTER WI-FI</string>
     <string name="label_bike">PAIRED BIKE</string>
     <string name="label_log">LOG</string>
     <string name="btn_android_auto">ANDROID AUTO</string>
@@ -22,5 +23,9 @@
     <string name="btn_save">SAVE</string>
     <string name="btn_cancel">CANCEL</string>
     <string name="qr_hint">POINT CAMERA AT THE BIKE\'S QR CODE</string>
+    <string name="manual_title">ENTER BIKE WI-FI</string>
+    <string name="manual_ssid_hint">WI-FI NAME (SSID)</string>
+    <string name="manual_pwd_hint">WI-FI PASSWORD</string>
+    <string name="manual_help">Some bikes (e.g. some US 675s) broadcast a Wi-Fi hotspot without a pairing QR. Find its name in your phone\'s Wi-Fi list; the password may be printed on the bike or in the manual.</string>
     <string name="cursor_block">█</string>
 </resources>

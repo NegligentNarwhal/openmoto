@@ -99,6 +99,17 @@
         android:text="@string/btn_pair"
         android:visibility="gone" />
 
+    <!-- Fallback for bikes that broadcast a Wi-Fi hotspot but have no pairing QR (e.g. some US
+         675s). Shown alongside PAIR BIKE until a bike is remembered. -->
+    <androidx.appcompat.widget.AppCompatButton
+        android:id="@+id/btn_manual_entry"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:layout_marginTop="10dp"
+        style="@style/OCF.GhostButton"
+        android:text="@string/btn_manual"
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/controls_row"
         android:layout_width="match_parent"

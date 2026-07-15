@@ -90,15 +90,25 @@ class MainActivity : AppCompatActivity() {
             "QR parsed: ssid=${qr.ssid} mac=${qr.mac} action=${qr.action} " +
                 "(ap=${qr.supportsAp}, p2p=${qr.supportsP2p}) modelId=${qr.modelId} sn=${qr.sn}"
         )
+        val wasPairOnly = pendingPairOnly
+        pendingPairOnly = false
+        // PAIR flow just remembers the bike (rider picks ANDROID AUTO or MIRROR next); the
+        // Start-then-scan flow connects straight away.
+        onBikePaired(qr, connectAfter = !wasPairOnly)
+    }
+
+    /**
+     * Shared post-pairing path for both the QR scan and the manual Wi-Fi entry: remember the bike,
+     * refresh the UI, then either connect immediately or stop and let the rider choose a mode.
+     */
+    private fun onBikePaired(qr: QrData, connectAfter: Boolean) {
         SavedBike.save(this, qr)
         log("bike remembered: ${SavedBike.displayLabel(this, qr)} — from now on Start connects without the QR.")
         refreshBikeUi()
-        if (pendingPairOnly) {
-            // PAIR flow: just remember the bike; the rider picks ANDROID AUTO or MIRROR next.
-            pendingPairOnly = false
+        if (!connectAfter) {
             log("paired — choose ANDROID AUTO or MIRROR to connect.")
             setStatus("IDLE", Sys.IDLE)
-            return@registerForActivityResult
+            return
         }
         connectToBike(qr, remembered = false)
     }
@@ -250,6 +260,10 @@ class MainActivity : AppCompatActivity() {
                 setStatus("IDLE", Sys.IDLE)
             }
         }
+
+        // No-QR fallback: some bikes broadcast a Wi-Fi hotspot without a pairing QR (e.g. some US
+        // 675s). Let the rider type in the SSID/password their own bike uses.
+        findViewById<Button>(R.id.btn_manual_entry).setOnClickListener { showManualEntryDialog() }
 
         // All components (bike PXC, Android Auto receiver, video pipeline — including those
         // running in the foreground service) log through LogBus; mirror it into the view.
@@ -471,6 +485,7 @@ class MainActivity : AppCompatActivity() {
         // Until a bike is paired, PAIR replaces the mode controls and the bike panel is hidden.
         // STOP only appears once Android Auto or Mirror is actually engaged.
         findViewById<View>(R.id.btn_pair).visibility = if (has) View.GONE else View.VISIBLE
+        findViewById<View>(R.id.btn_manual_entry).visibility = if (has) View.GONE else View.VISIBLE
         findViewById<View>(R.id.controls_row).visibility = if (has) View.VISIBLE else View.GONE
         btnStop.visibility = if (activeMode != null) View.VISIBLE else View.GONE
         findViewById<View>(R.id.bike_panel).visibility = if (has) View.VISIBLE else View.GONE
@@ -575,12 +590,66 @@ class MainActivity : AppCompatActivity() {
         input.requestFocus()
     }
 
+    /**
+     * Manual Wi-Fi entry for bikes with no pairing QR: the rider types the hotspot SSID + password
+     * their own bike broadcasts. We store it exactly like a scanned bike (with no modelId, so the
+     * profile falls back to legacy/675 and the PXC CLIENT_INFO handshake re-scores it once
+     * connected). This app ships no credentials — the rider supplies their own.
+     */
+    private fun showManualEntryDialog() {
+        val view = layoutInflater.inflate(R.layout.dialog_manual, null)
+        val ssidInput = view.findViewById<EditText>(R.id.manual_ssid)
+        val pwdInput = view.findViewById<EditText>(R.id.manual_pwd)
+        // Pre-fill from a saved bike so editing (e.g. after a password change) is easy.
+        SavedBike.load(this)?.let {
+            ssidInput.setText(it.ssid)
+            pwdInput.setText(it.pwd)
+        }
+        val dialog = AlertDialog.Builder(this).setView(view).create()
+        dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        fun submit() {
+            val ssid = ssidInput.text?.toString()?.trim().orEmpty()
+            val pwd = pwdInput.text?.toString().orEmpty()
+            if (ssid.isEmpty()) {
+                Toast.makeText(this, "Enter the bike's Wi-Fi name", Toast.LENGTH_SHORT).show()
+                return
+            }
+            // WPA2 passphrases are 8–63 chars; WifiNetworkSpecifier rejects anything else.
+            if (pwd.length !in 8..63) {
+                Toast.makeText(this, "Password must be 8–63 characters", Toast.LENGTH_SHORT).show()
+                return
+            }
+            dialog.dismiss()
+            val qr = QrData(
+                ssid = ssid,
+                pwd = pwd,
+                auth = "wpa2-psk",
+                mac = null,
+                name = null,
+                action = 1,        // basic AP (bit0) — these bikes broadcast a plain hotspot, not P2P
+                modelId = null,    // unknown → legacy/675 profile until the handshake re-scores it
+                sn = null,
+                channel = null,
+            )
+            log("manual Wi-Fi entry: ssid=$ssid — saved (legacy profile until the handshake).")
+            onBikePaired(qr, connectAfter = false)
+        }
+        view.findViewById<Button>(R.id.btn_manual_save).setOnClickListener { submit() }
+        view.findViewById<Button>(R.id.btn_manual_cancel).setOnClickListener { dialog.dismiss() }
+        pwdInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) { submit(); true } else false
+        }
+        dialog.show()
+        ssidInput.requestFocus()
+    }
+
     /** Staggered slide-up of the panel sections on launch. */
     private fun runEntryAnimation() {
         val rise = 14f * resources.displayMetrics.density
         listOf(
-            R.id.header_row, R.id.status_row, R.id.btn_pair, R.id.controls_row, R.id.btn_aa_stop,
-            R.id.bike_panel, R.id.log_header, R.id.log_scroll,
+            R.id.header_row, R.id.status_row, R.id.btn_pair, R.id.btn_manual_entry,
+            R.id.controls_row, R.id.btn_aa_stop, R.id.bike_panel, R.id.log_header, R.id.log_scroll,
         ).forEachIndexed { i, id ->
             findViewById<View>(id)?.let { v ->
                 v.alpha = 0f

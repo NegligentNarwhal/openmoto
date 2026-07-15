@@ -5,7 +5,7 @@ Run **Android Auto** (or mirror any app) on a CFMoto MotoPlay dashboard straight
 (US-market)** support, a **screen-mirror** mode, **bike saving**, and an
 **in-app touch control surface**
 
-> ⚠️ **This is a hack / proof-of-concept, not a product.** It talks to your dash over an
+> ⚠️ **This is a proof-of-concept, not a product.** It talks to your dash over an
 > undocumented, reverse-engineered protocol. It can misbehave or disconnect. **Do not fiddle with the
 > phone or interact with the dash while riding** — set everything up while stopped, then ride. Use at
 > your own risk.
@@ -20,14 +20,19 @@ falls back to the legacy (675) profile.
 
 | Bike | Dash family | QR modelId | Panel | Status |
 |------|-------------|-----------|-------|--------|
-| **CFMoto 675 SR-R** | CFDL16 (sdk 0.9.29.1) | `37416` | Landscape ~800×480 | ✅ Original target — behaviour preserved from upstream *(see note)* |
+| **CFMoto 675 SR-R** | CFDL16 (sdk 0.9.29.1) | `37416` | Landscape ~800×480 | ✅ Original upstream target — behaviour preserved *(see note)* |
+| **CFMoto 675 SS (US)** | CFDL16 (assumed) | *(no QR)* | Landscape (675-class, assumed) | 🧪 **Manual Wi-Fi entry** — dash shows no pairing QR; type the hotspot SSID/password by hand. Unverified |
 | **CFMoto 800NK (US)** | CRCP (sdk 0.9.23.4) | `66660703` | Landscape 800×400, Wi-Fi Direct | ✅ **Fully working**, confirmed on-bike |
 | **CFMoto 1000 MT-X** | CFDL26 / MotoPlay (sdk 1.1.4) | `37426` | Portrait ~800×951 | 🧪 **Experimental** — handshake incomplete, never confirmed end-to-end |
 
 **Notes**
 - The **800NK** is the only bike this fork's author owns and has verified end-to-end.
-- The **675** path is preserved byte-for-byte from upstream and is the guaranteed fallback, but it has
-  not been *re-run* on this branch — if you have a 675, a confirmation report is very welcome.
+- The **675 SR-R** path is preserved byte-for-byte from upstream and is the guaranteed fallback, but it
+  has not been *re-run* on this branch — if you have a 675 SR-R, a confirmation report is very welcome.
+- The **675 SS** (US-market) reportedly broadcasts a Wi-Fi hotspot but shows **no pairing QR**. For it,
+  tap **"No QR? Enter Wi-Fi"** on the pairing screen and type the hotspot's SSID/password by hand — it
+  maps to the legacy 675 profile and the handshake re-scores from there. This path is **unverified**; a
+  report from a 675 SS owner would confirm it. (OpenMoto ships no credentials — you supply your own.)
 - The **1000 MT-X** profile connects and handshakes but the dash never opens its media ports (it likely
   needs a real sock-server auth exchange that isn't implemented yet). Contributions with a 1000 MT-X to
   test against are the fastest way to finish it.
@@ -41,7 +46,8 @@ falls back to the legacy (675) profile.
 - **Screen Mirror** — mirror the whole phone screen instead, to put *any* app on the dash (e.g. a nav
   app AA doesn't support). Run the app in **landscape** for a full-screen picture; the phone screen
   must stay on while mirroring.
-- **Remember the bike** — scan the pairing QR once; after that a single tap reconnects, no QR.
+- **Remember the bike** — scan the pairing QR once (or, for a bike with no QR, enter its Wi-Fi by
+  hand); after that a single tap reconnects.
 - **In-app control surface** — a compact live view of Android Auto that you can **touch to control**
   (set nav, pick music, change the view) before pocketing the phone, plus a fullscreen mode.
 
@@ -94,7 +100,8 @@ Installed app id: `io.github.negligentnarwhal.openmoto`. (The internal Kotlin na
 ## Usage
 
 1. Navigate to the bike's **QR connect screen**.
-2. Open the app accept permissions when prompted, tap **PAIR BIKE**, and scan the dash QR.
+2. Open the app, accept permissions when prompted, tap **PAIR BIKE** and scan the dash QR — or, if your
+   bike shows no QR, tap **NO QR? ENTER WI-FI** and type the hotspot's name and password.
 3. Tap **ANDROID AUTO** (or **MIRROR**). Accept the Wi-Fi prompt if asked. The stream should appear on the dash after some time.
 4. Use the **compact control view** to set up nav/music; tap **⛶** for a fullscreen touch view.
 
@@ -124,22 +131,39 @@ This project stands on a chain of others' work:
 
 - **[headunit-revived](https://github.com/andreknieriem/headunit-revived)** by **André Rinas**
   ([@andreknieriem](https://github.com/andreknieriem)) — the Android Auto self-mode (AAP) implementation
-  this app's `aa/` package is ported from. Huge thanks; this wouldn't exist without it.
+  this app's `aa/` package is ported from. Huge thanks; dcoletto's work and this fork wouldn't exist without it.
 - **[open-cfmoto](https://github.com/dcoletto/open-cfmoto)** by **dcoletto** — the original CFMoto 675
-  SR-R proof-of-concept and the `BikeProfile`/PXC foundation this forks.
+  SR-R proof-of-concept and the `BikeProfile`/PXC foundation this forks. Another huge thanks. This fork wouldn't exist without dcoletto's work. 
 - **[richardbizik/open-cfmoto](https://github.com/richardbizik/open-cfmoto)** — Wi-Fi Direct + video
   support for the 1000 MT-X.
 - **OpenMoto** (this fork) by **[NegligentNarwhal](https://github.com/NegligentNarwhal)** — CFMoto
   800NK (US) support, screen-mirror mode, remembered-bike/auto-connect, and the in-app Android Auto
   touch control surface.
 
-The placeholder app icon uses the "motorbike" glyph from
+The app icon uses the "motorbike" glyph from
 **[Material Design Icons](https://pictogrammers.com/library/mdi/)** (Pictogrammers), Apache-2.0.
 The UI font is **[Space Mono](https://fonts.google.com/specimen/Space+Mono)** (SIL Open Font License,
 see `docs/SpaceMono-OFL.txt`).
 
 Background & discussion:
 [r/cfmoto thread](https://www.reddit.com/r/cfmoto/comments/1uuu63m/working_on_android_auto_on_cf_moto_at_least_675/).
+
+## Interoperability & legal
+
+OpenMoto is a **non-commercial, open-source interoperability project**. It lets a device you own (your
+phone) talk to another device you own (your bike's dashboard) over the dashboard's own wireless link,
+using the credentials the bike hands to its owner.
+
+- It ships **no CFMoto code and no CFMoto credentials**, and **circumvents no access control** — the
+  wire protocol was reverse-engineered by observing traffic, for the sole purpose of interoperability.
+  For bikes with no pairing QR, *you* supply your own bike's Wi-Fi credentials; the app embeds none.
+- It talks only to **hardware you own**, over a local link. It does not touch CFMoto's servers or
+  account, and reads no vehicle telemetry.
+- It is **free** and not monetised.
+
+Please keep it that way in any fork: non-commercial and interoperability-focused, shipping no
+manufacturer code or credentials. Use it with your own bike, at your own risk. **None of this is legal
+advice.**
 
 ## License
 
